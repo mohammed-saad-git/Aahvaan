@@ -95,6 +95,21 @@ async function waitFor<T>(
   return null;
 }
 
+/**
+ * Renders a Supabase URL with the project ref redacted, so verification output
+ * never contains a credential value.
+ */
+function maskedUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.hostname.split(".");
+    const domain = parts.length > 1 ? parts.slice(1).join(".") : parts[0];
+    return `${parsed.protocol}//<project-ref>.${domain}`;
+  } catch {
+    return "<unparseable-url>";
+  }
+}
+
 /** PostgREST may return a composite function result as an object or single-row array. */
 function firstRow(data: unknown): QueueEntryRow | null {
   if (Array.isArray(data)) {
@@ -196,23 +211,69 @@ async function main(): Promise<number> {
   }
 
   const { admin, anon } = createClients();
-  console.log(`  Project: ${SUPABASE_URL}\n`);
+  console.log(`  Target: ${maskedUrl(SUPABASE_URL)}\n`);
 
   let seedDate = "";
 
-  await check("1. Database is reachable", async () => {
-    const { error, count } = await admin
-      .from("organizations")
-      .select("id", { count: "exact", head: true });
+  await check("Database connectivity", async () => {
+    // A real GET. A HEAD request returned no body, which hid "table does not
+    // exist" errors and made this check pass against an empty schema.
+    const { error } = await admin.from("organizations").select("id").limit(1);
 
-    if (error) {
-      throw new Error(error.message);
+    if (!error) {
+      return "connected; organizations is readable with the secret key";
     }
 
-    return `connected; ${count ?? 0} organization row(s) readable with the secret key`;
+    const code = (error as { code?: string }).code;
+    const message = error.message.toLowerCase();
+    const authFailure =
+      code === "401" ||
+      message.includes("invalid api key") ||
+      message.includes("jwt") ||
+      message.includes("unauthorized");
+
+    if (authFailure) {
+      throw new Error(`credentials rejected: ${error.message}`);
+    }
+
+    // A schema-level error still proves the request reached PostgREST AND
+    // authenticated — connectivity is real, the schema just is not applied yet.
+    return `connected and authenticated (PostgREST replied: ${error.message})`;
   });
 
-  await check("2. Demo seed data exists", async () => {
+  await check("Required tables exist and are queryable", async () => {
+    const tables = [
+      "organizations",
+      "clinics",
+      "departments",
+      "patients",
+      "staff_users",
+      "queue_entries",
+      "consultations",
+    ] as const;
+
+    const unreadable: string[] = [];
+
+    for (const table of tables) {
+      // Real GET, not HEAD: HEAD responses suppressed the error and made this
+      // check report success against a completely empty schema.
+      const { error } = await admin.from(table).select("*").limit(1);
+
+      if (error) {
+        unreadable.push(`${table}: ${error.message}`);
+      }
+    }
+
+    if (unreadable.length > 0) {
+      throw new Error(
+        `missing or unreadable tables — apply supabase/migrations/0001_init.sql: ${unreadable.join("; ")}`,
+      );
+    }
+
+    return `all 7 tables present: ${tables.join(", ")}`;
+  });
+
+  await check("Seed data exists", async () => {
     const { data: org, error: orgError } = await admin
       .from("organizations")
       .select("name")
@@ -250,7 +311,7 @@ async function main(): Promise<number> {
     return `${(org as { name: string }).name}; departments: ${names.join(", ")}`;
   });
 
-  await check("3. Queue entries are queryable", async () => {
+  await check("Queue entries are queryable", async () => {
     seedDate = await resolveSeedDate(admin);
 
     const { data, error } = await admin
@@ -274,7 +335,7 @@ async function main(): Promise<number> {
     return `8 General OPD entries for ${seedDate}; statuses present: ${statuses.join(", ")}`;
   });
 
-  await check("4. Queue ordering is correct (priority first, then arrival)", async () => {
+  await check("Queue ordering is correct (priority first, then arrival)", async () => {
     const { data, error } = await admin
       .from("queue_entries")
       .select("token_number")
@@ -302,7 +363,7 @@ async function main(): Promise<number> {
     return `waiting order is [${actual}] — priority token 006 first, then arrival order`;
   });
 
-  await check("5. Priority entries are identifiable", async () => {
+  await check("Priority queue behavior", async () => {
     const { data, error } = await admin
       .from("queue_entries")
       .select("token_number, priority, priority_reason")
@@ -332,7 +393,124 @@ async function main(): Promise<number> {
     return `token ${row.token_number} has priority=true with a recorded reason`;
   });
 
-  await check("6. Illegal status transitions are rejected", async () => {
+  await check("Valid status transitions are accepted", async () => {
+    // Walks the entire legal happy path on a temporary patient, created through
+    // join_queue so that RPC is exercised too. Everything is deleted afterwards
+    // so the seeded demo data — and the ETA window — stay exactly as shipped.
+    const joined = await admin.rpc("join_queue", {
+      p_department_id: GENERAL_OPD_ID,
+      p_display_name: "Verification Patient (auto-cleanup)",
+      p_phone: null,
+      p_preferred_language: "en",
+    });
+
+    if (joined.error) {
+      throw new Error(`join_queue failed: ${joined.error.message}`);
+    }
+
+    const created = firstRow(joined.data);
+    if (!created) {
+      throw new Error("join_queue returned no queue entry");
+    }
+
+    const applyAction = async (
+      action: string,
+      expectedStatus: string,
+    ): Promise<QueueEntryRow> => {
+      const result = await admin.rpc("transition_queue_entry", {
+        p_queue_entry_id: created.id,
+        p_action: action,
+      });
+
+      if (result.error) {
+        throw new Error(
+          `legal action ${action} was rejected: ${result.error.message}`,
+        );
+      }
+
+      const row = firstRow(result.data);
+      if (!row) {
+        throw new Error(`${action} returned no queue entry`);
+      }
+      if (row.status !== expectedStatus) {
+        throw new Error(
+          `${action} produced ${row.status}, expected ${expectedStatus}`,
+        );
+      }
+
+      return row;
+    };
+
+    const steps: string[] = [];
+
+    try {
+      if (created.status !== "WAITING") {
+        throw new Error(
+          `expected WAITING immediately after joining, got ${created.status}`,
+        );
+      }
+      steps.push(`join -> WAITING (token ${created.token_number})`);
+
+      const calledRow = await applyAction("CALL", "CALLED");
+      if (!calledRow.called_at) {
+        throw new Error("CALLED transition did not set called_at");
+      }
+      steps.push("CALL -> CALLED (called_at set)");
+
+      const startedRow = await applyAction(
+        "START_CONSULTATION",
+        "IN_CONSULTATION",
+      );
+      if (!startedRow.consultation_started_at) {
+        throw new Error("START_CONSULTATION did not set consultation_started_at");
+      }
+
+      const { data: openConsultation, error: openError } = await admin
+        .from("consultations")
+        .select("ended_at")
+        .eq("queue_entry_id", created.id)
+        .maybeSingle();
+
+      if (openError) {
+        throw new Error(openError.message);
+      }
+      if (!openConsultation) {
+        throw new Error(
+          "START_CONSULTATION did not create a consultations audit row",
+        );
+      }
+      steps.push("START_CONSULTATION -> IN_CONSULTATION (audit row opened)");
+
+      const completedRow = await applyAction("COMPLETE", "COMPLETED");
+      if (!completedRow.completed_at) {
+        throw new Error("COMPLETE transition did not set completed_at");
+      }
+
+      const { data: closedConsultation, error: closedError } = await admin
+        .from("consultations")
+        .select("ended_at")
+        .eq("queue_entry_id", created.id)
+        .maybeSingle();
+
+      if (closedError) {
+        throw new Error(closedError.message);
+      }
+      if (!(closedConsultation as { ended_at: string | null } | null)?.ended_at) {
+        throw new Error(
+          "COMPLETE did not close the consultation (ended_at still null)",
+        );
+      }
+      steps.push("COMPLETE -> COMPLETED (completed_at set, audit row closed)");
+
+      return steps.join(" | ");
+    } finally {
+      await admin.from("consultations").delete().eq("queue_entry_id", created.id);
+      await admin.from("queue_entries").delete().eq("id", created.id);
+      await admin.from("patients").delete().eq("id", created.patient_id);
+    }
+  });
+
+  await check("Invalid state transitions are rejected", async () => {
     // Token 003 is the first non-priority waiting patient in the demo data.
     const waitingEntryId = "55555555-5555-4555-8555-000000000003";
     const rejected: string[] = [];
@@ -390,7 +568,7 @@ async function main(): Promise<number> {
     return rejected.join("; ");
   });
 
-  await check("7. Call Next is atomic under concurrency", async () => {
+  await check("call_next_queue_entry is atomic under concurrency", async () => {
     const [first, second] = await Promise.all([
       admin.rpc("call_next_queue_entry", {
         p_department_id: GENERAL_OPD_ID,
@@ -455,7 +633,7 @@ async function main(): Promise<number> {
   });
 
   await check(
-    "8. Realtime delivers a queue_entries change to a patient-style subscriber",
+    "Realtime delivers a queue_entries change to a patient-style subscriber",
     async () => {
       const received: Array<{ eventType: string; id: string; status: string }> =
         [];
