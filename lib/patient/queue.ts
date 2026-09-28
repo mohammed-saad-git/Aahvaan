@@ -223,13 +223,11 @@ export function applyRealtimeQueueChange(
 /* -------------------------------- input guards ------------------------------ */
 /* Shared by the join form and the server action so both agree on what is valid. */
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Guards route params BEFORE any query, so bad input never reaches Postgres. */
-export function isUuid(value: unknown): value is string {
-  return typeof value === "string" && UUID_PATTERN.test(value);
-}
+/**
+ * Re-exported from lib/validation.ts, where it now lives so the staff side can
+ * share the same guard. Kept exported here so existing imports keep working.
+ */
+export { isUuid } from "../validation.ts";
 
 export const DISPLAY_NAME_MAX_LENGTH = 80;
 
@@ -279,11 +277,12 @@ export function parsePatientPhone(value: unknown): PhoneParseResult {
   return { ok: true, value: raw };
 }
 
-/** Patient-facing token label, e.g. `#009`. Fixed width so the layout never jumps. */
-export function formatTokenNumber(tokenNumber: number): string {
-  const safe = Number.isFinite(tokenNumber) ? Math.max(0, Math.trunc(tokenNumber)) : 0;
-  return `#${String(safe).padStart(3, "0")}`;
-}
+/**
+ * Re-exported from lib/format.ts, where it now lives so the staff dashboard can
+ * share the exact same formatter. Kept exported here so the patient components
+ * and tests that already import it from this module keep working.
+ */
+export { formatTokenNumber } from "../format.ts";
 
 /** Languages the seed and the database CHECK constraint both allow. */
 export const PATIENT_LANGUAGE_OPTIONS = [

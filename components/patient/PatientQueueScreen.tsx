@@ -14,7 +14,7 @@ import { EtaDisplay } from "./EtaDisplay";
 import { QueuePosition } from "./QueuePosition";
 import { QueueStatusCard } from "./QueueStatusCard";
 import { QueueTimeline } from "./QueueTimeline";
-import { LiveIndicator, type ConnectionState } from "./States";
+import { LiveIndicator, type ConnectionState } from "../ui/States";
 
 const REFRESH_DEBOUNCE_MS = 300;
 
@@ -39,7 +39,6 @@ export function PatientQueueScreen({
   const [snapshot, setSnapshot] = useState<PatientQueueSnapshot>(initialSnapshot);
   const [syncedSnapshot, setSyncedSnapshot] = useState(initialSnapshot);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
-  const hasSubscribedOnce = useRef(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // React's documented "adjusting state when a prop changes" pattern: when
@@ -86,14 +85,14 @@ export function PatientQueueScreen({
       )
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
-          const isReconnect = hasSubscribedOnce.current;
-          hasSubscribedOnce.current = true;
           setConnection("connected");
 
-          if (isReconnect) {
-            // Events may have been missed while disconnected: resync.
-            router.refresh();
-          }
+          // Resync as soon as the subscription is live — including the very
+          // first subscribe. The initial snapshot was fetched BEFORE this
+          // subscription existed, so anything that changed in that window would
+          // otherwise never reach this screen. This is a one-off resync per
+          // subscribe, not polling.
+          router.refresh();
           return;
         }
 

@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "QueueCare · Clinic Queue",
+  title: "Aahvaan · Real-time patient flow",
   description:
     "Join the clinic queue from your phone and wait wherever you like.",
 };

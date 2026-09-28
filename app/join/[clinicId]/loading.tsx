@@ -1,4 +1,4 @@
-import { LoadingBlock } from "../../../components/patient/States";
+import { LoadingBlock } from "../../../components/ui/States";
 
 /**
  * Shown while the clinic and its departments are being loaded, so the patient

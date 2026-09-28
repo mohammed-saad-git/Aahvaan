@@ -1,4 +1,4 @@
-import { LoadingBlock } from "../../../components/patient/States";
+import { LoadingBlock } from "../../../components/ui/States";
 
 /**
  * Shown while the patient's queue position and ETA history are being loaded.

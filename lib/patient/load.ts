@@ -51,6 +51,29 @@ function toViews(rows: readonly unknown[]): QueueEntryView[] {
   return views;
 }
 
+/**
+ * Every clinic, for the landing page's "Join a queue" links.
+ *
+ * Public because a patient arriving at the root URL must be able to pick a clinic
+ * without an account. The clinic list is not sensitive; patient data never
+ * appears here.
+ */
+export async function loadClinicOptions(): Promise<ClinicSummary[]> {
+  const supabase = createPrivilegedSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("clinics")
+    .select("id, name, address")
+    .order("name", { ascending: true });
+
+  if (error) {
+    logServerError("loadClinicOptions", error.message);
+    return [];
+  }
+
+  return (data ?? []) as ClinicSummary[];
+}
+
 export async function loadClinicSummary(
   clinicId: string,
 ): Promise<ClinicSummary | null> {

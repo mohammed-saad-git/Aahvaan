@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
 /**
- * Shared loading and friendly-error primitives, so every asynchronous state in
- * the patient flow looks the same and no screen is ever blank.
+ * Shared UI primitives used by both the patient and staff surfaces, so every
+ * asynchronous state looks consistent and no screen is ever blank.
  */
 
 export function LoadingBlock({ label }: { label: string }) {
@@ -58,7 +58,7 @@ export type ConnectionState = "connecting" | "connected" | "reconnecting";
  * Small "Live" indicator.
  *
  * The initial render is always `connecting`, on both server and client, so the
- * markup matches during hydration and there is never a time-formatting mismatch.
+ * markup matches during hydration.
  */
 export function LiveIndicator({
   connection,

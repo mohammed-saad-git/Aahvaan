@@ -4,7 +4,7 @@ import { PatientJoinForm } from "../../../components/patient/PatientJoinForm";
 import {
   FriendlyMessage,
   LoadingBlock,
-} from "../../../components/patient/States";
+} from "../../../components/ui/States";
 import {
   loadActiveDepartments,
   loadClinicSummary,

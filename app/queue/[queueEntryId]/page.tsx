@@ -1,5 +1,5 @@
 import { PatientQueueScreen } from "../../../components/patient/PatientQueueScreen";
-import { FriendlyMessage } from "../../../components/patient/States";
+import { FriendlyMessage } from "../../../components/ui/States";
 import { loadPatientQueueSnapshot } from "../../../lib/patient/load.ts";
 import { isUuid } from "../../../lib/patient/queue.ts";
 
