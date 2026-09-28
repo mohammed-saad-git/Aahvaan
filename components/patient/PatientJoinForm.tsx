@@ -58,7 +58,9 @@ export function PatientJoinForm({
       const result = await joinQueueAction({
         clinicId,
         departmentId: selectedDepartment.id,
-        displayName,
+        // Trimmed here as well as server-side (sanitizeDisplayName collapses
+        // whitespace), so the enabled/disabled state and the stored value agree.
+        displayName: displayName.trim(),
         phone,
         language,
       });
@@ -88,88 +90,93 @@ export function PatientJoinForm({
         </div>
       </section>
 
-      {selectedDepartment ? (
-        <section className="space-y-4">
+      {/*
+        Always visible, whether or not a department has been chosen yet. Hiding
+        this behind the department selection made the page instruct patients to
+        "enter your name" while showing no name field at all.
+      */}
+      <section className="space-y-4">
+        {selectedDepartment ? (
           <p className="text-sm font-medium text-slate-600">
             You’re joining{" "}
             <span className="font-semibold text-slate-900">
               {selectedDepartment.name}
             </span>
           </p>
+        ) : (
+          <p className="text-sm text-slate-500">
+            Pick the department you need to see, then enter your name.
+          </p>
+        )}
 
-          <div>
-            <label
-              htmlFor="patient-name"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Your name
-            </label>
-            <input
-              id="patient-name"
-              name="name"
-              type="text"
-              required
-              autoComplete="name"
-              maxLength={80}
-              placeholder="e.g. Asha Kumar"
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-              disabled={isPending}
-              className={inputClassName}
-            />
-          </div>
+        <div>
+          <label
+            htmlFor="patient-name"
+            className="block text-sm font-medium text-slate-700"
+          >
+            Your name
+          </label>
+          <input
+            id="patient-name"
+            name="name"
+            type="text"
+            required
+            autoComplete="name"
+            maxLength={80}
+            placeholder="Enter your name"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            disabled={isPending}
+            className={inputClassName}
+          />
+        </div>
 
-          <div>
-            <label
-              htmlFor="patient-phone"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Phone number{" "}
-              <span className="font-normal text-slate-400">(optional)</span>
-            </label>
-            <input
-              id="patient-phone"
-              name="phone"
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel"
-              maxLength={20}
-              placeholder="+91 90000 00000"
-              value={phone}
-              onChange={(event) => setPhone(event.target.value)}
-              disabled={isPending}
-              className={inputClassName}
-            />
-          </div>
+        <div>
+          <label
+            htmlFor="patient-phone"
+            className="block text-sm font-medium text-slate-700"
+          >
+            Phone number{" "}
+            <span className="font-normal text-slate-400">(optional)</span>
+          </label>
+          <input
+            id="patient-phone"
+            name="phone"
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            maxLength={20}
+            placeholder="+91 90000 00000"
+            value={phone}
+            onChange={(event) => setPhone(event.target.value)}
+            disabled={isPending}
+            className={inputClassName}
+          />
+        </div>
 
-          <div>
-            <label
-              htmlFor="patient-language"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Preferred language
-            </label>
-            <select
-              id="patient-language"
-              name="language"
-              value={language}
-              onChange={(event) => setLanguage(event.target.value)}
-              disabled={isPending}
-              className={inputClassName}
-            >
-              {PATIENT_LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.code} value={option.code}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </section>
-      ) : (
-        <p className="text-sm text-slate-500">
-          Pick the department you need to see, then enter your name.
-        </p>
-      )}
+        <div>
+          <label
+            htmlFor="patient-language"
+            className="block text-sm font-medium text-slate-700"
+          >
+            Preferred language
+          </label>
+          <select
+            id="patient-language"
+            name="language"
+            value={language}
+            onChange={(event) => setLanguage(event.target.value)}
+            disabled={isPending}
+            className={inputClassName}
+          >
+            {PATIENT_LANGUAGE_OPTIONS.map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
 
       {errorMessage ? (
         <p
