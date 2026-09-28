@@ -2,9 +2,10 @@
  * Queue state machine.
  *
  * This module is the single source of truth for which queue transitions are
- * legal. The Postgres `transition_queue_entry()` RPC (added in P1) must mirror
- * this table exactly, so that the rule is enforced no matter which client or
- * script touches the data.
+ * legal. It is mirrored exactly by `public.is_queue_transition_allowed()` and
+ * by the `enforce_queue_transition` trigger in
+ * `supabase/migrations/0001_init.sql`, so the rule holds no matter which
+ * client, script or SQL session touches the data.
  *
  * Everything here is pure and dependency-free so it can be unit tested without
  * a database, a browser or a React renderer.
@@ -15,7 +16,7 @@
 
 import type { QueueStatus } from "../types";
 
-/** All statuses, in lifecycle order. */
+/** All statuses, in lifecycle order. These values are the DB enum values too. */
 export const QUEUE_STATUSES = [
   "WAITING",
   "CALLED",
@@ -31,6 +32,14 @@ export const ACTIVE_QUEUE_STATUSES = [
   "IN_CONSULTATION",
 ] as const satisfies readonly QueueStatus[];
 
+/**
+ * Statuses with no outgoing transitions. Nothing may leave these states.
+ */
+export const TERMINAL_QUEUE_STATUSES = [
+  "COMPLETED",
+  "NO_SHOW",
+] as const satisfies readonly QueueStatus[];
+
 /** Human-readable label for a status, shared by the patient and staff UIs. */
 export const QUEUE_STATUS_LABELS: Readonly<Record<QueueStatus, string>> = {
   WAITING: "Waiting",
@@ -41,42 +50,43 @@ export const QUEUE_STATUS_LABELS: Readonly<Record<QueueStatus, string>> = {
 };
 
 /**
- * The normal forward workflow, without any requeue shortcuts:
+ * The queue workflow:
  *
  *   WAITING         -> CALLED | NO_SHOW
- *   CALLED          -> IN_CONSULTATION | NO_SHOW
+ *   CALLED          -> WAITING | IN_CONSULTATION | NO_SHOW
  *   IN_CONSULTATION -> COMPLETED
  *   COMPLETED       -> (terminal)
  *   NO_SHOW         -> (terminal)
  *
- * Escaping a terminal (or mid-flight) state is only possible through the
- * explicit `requeue` option — see `canTransition`.
+ * `CALLED -> WAITING` is the ONLY requeue operation: a patient who was called
+ * but did not turn up is put back into the waiting queue. There is deliberately
+ * no path out of IN_CONSULTATION, COMPLETED or NO_SHOW.
  */
 export const ALLOWED_TRANSITIONS: Readonly<
   Record<QueueStatus, readonly QueueStatus[]>
 > = {
   WAITING: ["CALLED", "NO_SHOW"],
-  CALLED: ["IN_CONSULTATION", "NO_SHOW"],
+  CALLED: ["WAITING", "IN_CONSULTATION", "NO_SHOW"],
   IN_CONSULTATION: ["COMPLETED"],
   COMPLETED: [],
   NO_SHOW: [],
 };
 
-/** The status every explicit requeue returns a patient to. */
-export const REQUEUE_STATUS: QueueStatus = "WAITING";
-
-export interface TransitionOptions {
-  /**
-   * When true, the caller is performing a deliberate, operator-initiated
-   * requeue (e.g. "I completed this by mistake", "this patient came back").
-   * Only then may a patient re-enter the queue. Defaults to false.
-   */
-  requeue?: boolean;
-}
+/**
+ * The single requeue edge — the only way a patient re-enters the queue after
+ * leaving the WAITING state.
+ */
+export const REQUEUE_TRANSITION = {
+  from: "CALLED",
+  to: "WAITING",
+} as const satisfies { from: QueueStatus; to: QueueStatus };
 
 const STATUS_SET: ReadonlySet<string> = new Set<string>(QUEUE_STATUSES);
 const ACTIVE_STATUS_SET: ReadonlySet<string> = new Set<string>(
   ACTIVE_QUEUE_STATUSES,
+);
+const TERMINAL_STATUS_SET: ReadonlySet<string> = new Set<string>(
+  TERMINAL_QUEUE_STATUSES,
 );
 
 /** Type guard for values coming from the database, URLs or realtime payloads. */
@@ -87,6 +97,11 @@ export function isQueueStatus(value: unknown): value is QueueStatus {
 /** True while the patient is still expected to be part of the live queue. */
 export function isActiveStatus(status: QueueStatus): boolean {
   return ACTIVE_STATUS_SET.has(status);
+}
+
+/** True once the entry has left the active queue for good. */
+export function isTerminalStatus(status: QueueStatus): boolean {
+  return TERMINAL_STATUS_SET.has(status);
 }
 
 function baseTransitionsOf(status: QueueStatus): readonly QueueStatus[] {
@@ -100,47 +115,27 @@ function baseTransitionsOf(status: QueueStatus): readonly QueueStatus[] {
  * Returns false for no-op transitions (`from === to`) so repeated staff clicks
  * cannot silently re-timestamp a row.
  */
-export function canTransition(
-  from: QueueStatus,
-  to: QueueStatus,
-  options: TransitionOptions = {},
-): boolean {
+export function canTransition(from: QueueStatus, to: QueueStatus): boolean {
   if (from === to) {
     return false;
-  }
-
-  if (options.requeue === true && to === REQUEUE_STATUS) {
-    // An explicit requeue may pull a patient back from any other status.
-    return true;
   }
 
   return baseTransitionsOf(from).includes(to);
 }
 
-/**
- * Every legal destination from `status`.
- *
- * With `{ requeue: true }`, `WAITING` is included as an explicit escape hatch
- * (but never for a patient who is already waiting).
- */
+/** Every legal destination from `status`. */
 export function getAllowedTransitions(
   status: QueueStatus,
-  options: TransitionOptions = {},
 ): readonly QueueStatus[] {
-  const base = baseTransitionsOf(status);
-
-  if (options.requeue !== true || status === REQUEUE_STATUS) {
-    return base;
-  }
-
-  return [...base, REQUEUE_STATUS];
+  return baseTransitionsOf(status);
 }
 
 /**
  * The staff-facing actions that drive the queue.
  *
  * Each action maps to exactly one target status, so the UI never sets a status
- * directly and the RPC layer can re-validate the same mapping server-side.
+ * directly and the `transition_queue_entry` RPC re-validates the same mapping
+ * server-side.
  */
 export type QueueAction =
   | "CALL"
@@ -154,21 +149,21 @@ export const QUEUE_ACTION_TARGET: Readonly<Record<QueueAction, QueueStatus>> = {
   START_CONSULTATION: "IN_CONSULTATION",
   COMPLETE: "COMPLETED",
   NO_SHOW: "NO_SHOW",
-  REQUEUE: REQUEUE_STATUS,
+  REQUEUE: REQUEUE_TRANSITION.to,
 };
 
 /** Actions an operator may perform on an entry right now. */
-export function getAvailableActions(status: QueueStatus): readonly QueueAction[] {
+export function getAvailableActions(
+  status: QueueStatus,
+): readonly QueueAction[] {
   const actions: QueueAction[] = [];
 
   for (const action of Object.keys(QUEUE_ACTION_TARGET) as QueueAction[]) {
-    const target = QUEUE_ACTION_TARGET[action];
-    const isRequeue = action === "REQUEUE";
-
-    if (canTransition(status, target, { requeue: isRequeue })) {
+    if (canTransition(status, QUEUE_ACTION_TARGET[action])) {
       actions.push(action);
     }
   }
 
   return actions;
 }
+

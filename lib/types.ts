@@ -56,7 +56,8 @@ export interface Department {
   id: string;
   clinicId: string;
   name: string;
-  description: string | null;
+  /** Short human/QR-friendly code, unique within a clinic, e.g. `GOPD`. */
+  code: string;
   active: boolean;
   createdAt: IsoTimestamp;
 }
@@ -120,6 +121,7 @@ export interface StaffUser {
   departmentId: string | null;
   name: string;
   role: StaffRole;
+  isActive: boolean;
   createdAt: IsoTimestamp;
 }
 
@@ -133,5 +135,7 @@ export interface Consultation {
   /** Null only if the consultation was started without an identified staff member. */
   staffUserId: string | null;
   startedAt: IsoTimestamp;
-  completedAt: IsoTimestamp | null;
+  /** Null while the consultation is still open. */
+  endedAt: IsoTimestamp | null;
+  notes: string | null;
 }
